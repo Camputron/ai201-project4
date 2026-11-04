@@ -46,16 +46,34 @@ DETECTOR_MODEL = os.getenv("AI201_DETECTOR_MODEL", "gpt2")
 # 300 words, which is enough for the signal to mean something.
 DETECTOR_MAX_TOKENS = 400
 
+# Where detector.model_signal squashes perplexity onto 0–1. The starter had the
+# midpoint at 45, which put even vivid, clearly human writing (perplexity ~30)
+# at 0.65 — AI-leaning. On my calibration inputs AI text sat at 6–19 and human
+# at 15–93, so 30 is closer to the real dividing line. Steepness 2.0 (was 1.6)
+# spreads the scores out a little more either side of it.
+DETECTOR_MIDPOINT = 30.0
+DETECTOR_STEEPNESS = 2.0
+
 
 # ─── Scoring (Milestone 4) ───────────────────────────────────────────────────
 # How much each signal counts toward the combined score.
 #
-# ⚠️ These are placeholders. Milestone 4 asks you to write your combining rule
-# down BEFORE you code it, and to put the numbers in your README. Whatever you
-# decide, it goes here.
+# The style signal counts for more than the model signal. Calibration showed
+# the model signal can't tell plain human writing from AI (a plain paragraph
+# about a dog scored lower perplexity than real AI text), and that is the
+# writer this service is most likely to wrongly accuse.
+#
+# The rule itself, including the agreement rule below, is written out in
+# scoring.py::combine_signals and in the README.
 
-WEIGHT_MODEL_SIGNAL = 0.5
-WEIGHT_STYLE_SIGNAL = 0.5
+WEIGHT_MODEL_SIGNAL = 0.4
+WEIGHT_STYLE_SIGNAL = 0.6
+
+# Agreement rule: the high-confidence AI label needs BOTH signals to lean AI on
+# their own — each at or above this. If either one reads human, the combined
+# score is capped just under AI_THRESHOLD, so the worst a writer can get is
+# "unsure". Not symmetric on purpose: missing some AI text is the cheap mistake.
+AGREEMENT_FLOOR = 0.5
 
 
 # ─── Thresholds (Milestone 5) ────────────────────────────────────────────────
@@ -71,8 +89,12 @@ WEIGHT_STYLE_SIGNAL = 0.5
 # getting through. There is no setting that avoids the trade — only settings
 # that decide who pays for it.
 
-HUMAN_THRESHOLD = 0.35
-AI_THRESHOLD = 0.65
+HUMAN_THRESHOLD = 0.40
+AI_THRESHOLD = 0.70
+
+# 0.70, not 0.65: the plain human paragraphs in calibration landed at 0.56–0.60,
+# and I want a clear gap between them and the AI label. The clearly-AI inputs
+# landed at 0.82–0.86, so the AI label is still reachable.
 
 # ⚠️ One thing that catches people out in Milestone 5. A weighted average can
 # only land between its two inputs — so while `style_signal` is still the stub
@@ -83,6 +105,16 @@ AI_THRESHOLD = 0.65
 # If a label you can't reach is the problem, the fix is upstream of the
 # thresholds: a style signal that actually varies. `scoring.label_ranges()`
 # prints the bands; the reachable range is a different question.
+
+
+# ─── Input limits ────────────────────────────────────────────────────────────
+# Below MIN_WORDS neither signal has enough to go on — sentence spread needs
+# several sentences, and perplexity on a dozen tokens is noise. Rather than
+# guess, /submit refuses and says why. Above MAX_CHARS the request is refused
+# before any model runs (the detector only reads the first 400 tokens anyway).
+
+MIN_WORDS = 25
+MAX_CHARS = 20_000
 
 
 # ─── Rate limiting (UNIT 8) ──────────────────────────────────────────────────
