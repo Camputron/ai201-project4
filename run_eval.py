@@ -25,6 +25,7 @@ import argparse
 import datetime as dt
 import json
 import sys
+import time
 from pathlib import Path
 
 import config
@@ -60,7 +61,7 @@ def bodies_for(scenario):
 
 def describe(body):
     """A short, readable note of what was sent — for the report."""
-    if set(body) == {"text", "creator_id"} and isinstance(body.get("text"), str):
+    if isinstance(body, dict) and set(body) == {"text", "creator_id"} and isinstance(body.get("text"), str):
         text = body["text"]
         return text[:70] if text else "(empty text)"
     return json.dumps(body)[:120]
@@ -112,13 +113,23 @@ def main():
 
         trials = []
         for trial in range(1, args.trials + 1):
+            if scenario.get("appeal"):
+                results = appeal_trial(requests, args, scenario, trial)
+                trials.append(results)
+                ok = sum(1 for r in results if r.get("passed"))
+                print(f"  trial {trial}: {ok}/{len(results)} passed")
+                continue
             results = []
             for i, body in enumerate(bodies_for(scenario), 1):
                 preview = describe(body)
                 try:
+                    before = log_count(requests, args)
+                    started = time.monotonic()
                     response = requests.post(f"{args.url}/submit", json=body,
                                              timeout=args.timeout)
+                    elapsed = round(time.monotonic() - started, 3)
                     payload = response.json() if response.content else {}
+                    last = last_entry(requests, args)
                     results.append({
                         "status": response.status_code,
                         "guess": payload.get("guess"),
@@ -126,6 +137,10 @@ def main():
                         "model_score": payload.get("model_score"),
                         "style_score": payload.get("style_score"),
                         "label": payload.get("label"),
+                        "error": payload.get("error"),
+                        "elapsed_s": elapsed,
+                        "log_entries_added": log_count(requests, args) - before,
+                        "last_log_status": last.get("status"),
                         "sent": preview,
                     })
                 except Exception as exc:  # noqa: BLE001
@@ -139,6 +154,76 @@ def main():
         rows.append({"scenario": scenario, "trials": trials})
 
     write_report(rows, args)
+
+
+def log_count(requests, args):
+    """How many entries the audit log holds right now, via GET /health."""
+    return requests.get(f"{args.url}/health", timeout=10).json()["log_entries"]
+
+
+def last_entry(requests, args):
+    entries = requests.get(f"{args.url}/log?limit=1", timeout=10).json()["entries"]
+    return entries[-1] if entries else {}
+
+
+def appeal_trial(requests, args, scenario, trial):
+    """
+    Criterion 4. Added for this project — the starter only sends /submit.
+
+    For each text: submit it, then appeal the content_id that came back, and
+    check (a) the appeal answered 200 with status under_review, (b) exactly
+    one new appeal entry for that id landed in the log, (c) the original
+    decision entry is unchanged, (d) GET /content/<id> says under_review.
+
+    For each made-up id: appeal it and check for a 404 and no new log entry.
+    """
+    results = []
+    for i, text in enumerate(scenario["texts"], 1):
+        creator = f"eval_appeal_{trial}_{i}"
+        sub = requests.post(f"{args.url}/submit",
+                            json={"text": text, "creator_id": creator},
+                            timeout=args.timeout)
+        content_id = sub.json().get("content_id") if sub.ok else None
+        if not content_id:
+            results.append({"content_id": None, "submit_status": sub.status_code,
+                            "passed": False})
+            continue
+
+        def entries():
+            log = requests.get(f"{args.url}/log", timeout=10).json()["entries"]
+            return [e for e in log if e.get("content_id") == content_id]
+
+        before = entries()
+        appeal = requests.post(f"{args.url}/appeal",
+                               json={"content_id": content_id,
+                                     "reasoning": f"I wrote this myself (eval trial {trial})."},
+                               timeout=args.timeout)
+        after = entries()
+        new_appeals = [e for e in after[len(before):] if e.get("event") == "appeal"]
+        content = requests.get(f"{args.url}/content/{content_id}", timeout=10).json()
+        checks = {
+            "appeal_200": appeal.status_code == 200,
+            "says_under_review": appeal.json().get("status") == "under_review",
+            "one_appeal_entry_logged": len(new_appeals) == 1
+                                       and len(after) - len(before) == 1,
+            "decision_unchanged": after[:len(before)] == before,
+            "content_status_under_review": content.get("status") == "under_review",
+        }
+        results.append({"content_id": content_id, "original_guess": sub.json().get("guess"),
+                        "appeal_status": appeal.status_code, **checks,
+                        "passed": all(checks.values())})
+
+    for fake in scenario.get("fake_ids", []):
+        before = log_count(requests, args)
+        appeal = requests.post(f"{args.url}/appeal",
+                               json={"content_id": fake, "reasoning": "typo test"},
+                               timeout=args.timeout)
+        added = log_count(requests, args) - before
+        results.append({"content_id": fake, "fake": True,
+                        "appeal_status": appeal.status_code,
+                        "log_entries_added": added,
+                        "passed": appeal.status_code == 404 and added == 0})
+    return results
 
 
 def write_report(rows, args):
