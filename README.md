@@ -360,24 +360,41 @@ what came back.
 
 ## Rate Limiting
 
-**My limits:** ___ per minute, ___ per day
+**My limits:** 5 per minute, 50 per day (`config.RATE_LIMIT_PER_MINUTE`,
+`config.RATE_LIMIT_PER_DAY`), on `POST /submit` only.
 
 **Why those numbers and not others:**
-<!-- Think about two people: a real writer submitting their own work a few
-     times an hour, and a script sending a thousand variations to map your
-     thresholds. Your numbers have to be liveable for the first and hostile to
-     the second. -->
+A real writer submits a piece, maybe fixes a typo and resubmits, maybe tries
+another piece — two or three requests in a minute at most, and rarely more than
+a handful a day. 5 a minute never gets in their way. A script trying to map
+where my 0.40 and 0.70 lines sit needs hundreds of near-identical variants;
+at 5 a minute it hits the wall on request 6, and at 50 a day one creator_id
+needs weeks to collect enough points. I went lower than the starter's 10/200
+because nothing a writer does needs 200 judgements a day, and every extra
+judgement is one more data point for someone probing the thresholds.
 
-**What a caller counts as:** <!-- per address, or per creator_id? They fail
-differently — one script can look like a thousand callers, and one household
-can look like one. -->
+**What a caller counts as:** the `creator_id` in the body, falling back to the
+caller's address when there isn't a usable one (the starter's
+`app.py::rate_limit_key`). Per-creator is fairer to a household or classroom
+sharing one address. Its weakness is that a script can make up a new
+creator_id for every request and never be limited — on a real site,
+creator_id would have to come from a login, not from the request body.
 
 **The run of status codes when I pushed past it:**
 
-<!-- python run_attacks.py --flood 15 -->
+```
+$ python run_attacks.py --flood 15
 
+200 200 200 200 200 429 429 429 429 429 429 429 429 429 429
+
+10 of 15 were rate limited.
 ```
 
+Each 429 left a trace in the audit log (`results/flood_2026-11-04_1718.md`
+has the run):
+
+```json
+{"timestamp": "2026-11-04T22:18:49+00:00", "creator_id": "flood_tester", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "5 per 1 minute"}
 ```
 
 ---
