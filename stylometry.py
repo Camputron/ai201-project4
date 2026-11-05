@@ -125,9 +125,9 @@ def punctuation_density(text: str) -> float:
 # anchor values, then the three are averaged with weights.
 #
 #   measure                 reads human at   reads AI at   weight
-#   sentence_length_spread       0.60            0.20        0.50
-#   type_token_ratio             0.80            0.95        0.30
-#   punctuation_density          0.20            0.05        0.20
+#   sentence_length_spread       0.60            0.20        0.625  (was 0.50)
+#   type_token_ratio             0.80            0.95        0.375  (was 0.30)
+#   punctuation_density          0.20            0.05        0      (was 0.20)
 #
 # Anchors come from the Milestone 4 calibration inputs (README, Signals and
 # Scoring). Spread gets the most weight because it separated the clearly-AI
@@ -135,7 +135,14 @@ def punctuation_density(text: str) -> float:
 # written human text uses almost none — the same writer signal one already
 # misjudges — and I don't want this signal piling on.
 
-STYLE_WEIGHTS = {"spread": 0.50, "variety": 0.30, "punctuation": 0.20}
+# UNIT 8 IMPROVEMENT (the one change): punctuation weight 0.20 -> 0, with the
+# other two scaled up in the same 5:3 ratio. Diagnosis: plain human prose uses
+# almost no non-full-stop punctuation (0.00 on Winesburg and Dubliners), while
+# generated text is full of commas (0.07-0.11) — so this measure read plain
+# writers as MORE machine-like than machines. It's still computed and shown by
+# style_parts() for diagnosis; it just no longer counts.
+# Was: {"spread": 0.50, "variety": 0.30, "punctuation": 0.20}
+STYLE_WEIGHTS = {"spread": 0.625, "variety": 0.375, "punctuation": 0.0}
 
 
 def _ramp(value: float, human_at: float, ai_at: float) -> float:
