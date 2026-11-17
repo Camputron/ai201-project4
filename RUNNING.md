@@ -1,5 +1,75 @@
 # Running Provenance Guard
 
+## Start it — capstone run path (Path B, local with logs)
+
+From a fresh clone, on macOS or Linux:
+
+```bash
+git clone https://github.com/Camputron/ai201-project4-provenance-guard-starter-v2026.git
+cd ai201-project4-provenance-guard-starter-v2026
+./start.sh
+```
+
+That one command is the whole run path. The first time, it creates `.venv`,
+installs the pinned dependencies and downloads the model, then starts the
+service on `http://127.0.0.1:5000`. Every time after, it just starts the
+service. Leave that terminal open, and check it from a second one:
+
+```bash
+curl http://127.0.0.1:5000/health
+```
+
+`{"ok": true, ...}` means it's up. `detector_loaded` stays `false` until the
+first submission, because the model loads on first use (that first request
+takes several seconds; later ones well under one).
+
+**What the environment needs**
+
+| Need | Detail |
+|---|---|
+| Python | 3.11, 3.12 or 3.13 — **not 3.14**. Tested on 3.12.11 (macOS 26, Apple Silicon). `start.sh` picks the first suitable `python3.x` on your PATH. |
+| Dependencies | `requirements.txt`, every package pinned with lower and upper bounds (flask, flask-limiter, requests, transformers, torch, gunicorn, certifi) |
+| Model | `gpt2` from Hugging Face, about **550 MB**, cached in `~/.cache/huggingface/hub`. Downloaded once by `start.sh` (or `python detector.py`). Needs internet the first time only. |
+| Disk | About 9 GB free — torch is most of it |
+| Memory | 4 GB or more; the loaded service uses about 0.8 GB |
+| Accounts / keys | None. Nothing calls a hosted service. |
+
+**Windows (PowerShell)** — `start.sh` is bash, so run its steps by hand:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python detector.py
+python app.py
+```
+
+**Gotchas I hit**
+
+- **Port 5000 on macOS.** AirPlay Receiver also listens on port 5000. If the
+  service *isn't* running, `curl` to port 5000 gets `403 Forbidden` from
+  AirPlay rather than "connection refused", which looks like the service
+  rejecting you. Check `/health` first. To use another port:
+  `PORT=5050 ./start.sh`, then pass `--url http://127.0.0.1:5050` to the
+  scripts below.
+- **A stale server.** If you edit code, stop the old process (Ctrl-C) before
+  starting again — a second `app.py` can fail to bind while the first keeps
+  answering with old code.
+
+**Where the record of it running lives**
+
+Every request writes one JSON line to `logs/audit.jsonl` (committed, on
+purpose), including how long it took. Read it back with
+`curl "http://127.0.0.1:5000/log?limit=10"`. To measure cost:
+
+```bash
+.venv/bin/python measure_cost.py --runs 10 --label mine
+```
+
+---
+
+## Everything below is the original starter guide (units 7–8)
+
 Everything about how the starter works.
 
 This is a **web service**. It runs on your machine and you talk to it with
