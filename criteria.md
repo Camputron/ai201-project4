@@ -158,3 +158,125 @@ checks that bad input is turned away before the model runs.
      A number you missed stays where it is, gets diagnosed, and gets a fix
      attempted. That's where the points are.
      ───────────────────────────────────────────────────────────────────────── -->
+
+---
+---
+
+# Capstone criteria (unit 9)
+
+These five are about the extension: the instrumentation, run path and cost
+measurement added to Provenance Guard. They are separate from the five above,
+which stay as submitted.
+
+> **How these were written.** I (the student) asked Claude to draft them, and
+> I'm noting it here because the brief asks students to write their own.
+> They were committed before any capstone test run. One disclosure: while
+> building the instrumentation, Claude smoke-tested it on throwaway logs and
+> saw a handful of numbers, none of them committed. Warm submissions took
+> 65–70 ms wall and about 140 ms CPU. A cold first submission took 2.8 s in
+> one run and 8.5 s in another (that one also included importing torch).
+> The targets below are set from what a slow or missing answer would cost,
+> and they are deliberately close enough to those numbers to be missable.
+
+**What one trial is.** All five are measured by one trial, run three times.
+Each trial does the following, in order:
+
+1. Start the service fresh, so gpt2 is not yet loaded and the rate limiter is
+   empty.
+2. Send a bad-input batch of 14 requests:
+   - 7 malformed bodies: no `text`, empty text, whitespace-only text, null
+     text, a JSON list, unparseable JSON, no `creator_id`;
+   - one text of 60,000 characters;
+   - 6 short submissions from a single creator, of which 5 are refused as
+     too short and the sixth is rate-limited.
+3. Send one valid submission. This is the cold one.
+4. Send 20 more valid submissions, one at a time, from the 15 texts in
+   `scenarios.py` (`HUMAN` and `AI`, cycled).
+5. Send 3 appeals against content_ids from step 4.
+6. Stop the service.
+
+All durations are read from the audit log (`duration_ms`, `cpu_ms`,
+`stages_ms`), not from the client's stopwatch. All three trials have to meet
+a target for it to be MET.
+
+---
+
+## C1. Every request leaves exactly one timed record
+
+In each trial, the 38 requests that should be logged (14 bad-input, 1 cold,
+20 warm, 3 appeals) produce exactly 38 new entries in `logs/audit.jsonl`:
+**38 of 38**. Every entry has a numeric `duration_ms` and `cpu_ms`. On every
+one of the 21 decision entries, `stages_ms` has all four stages, and **the
+stages add up to at least 95% of `duration_ms`**.
+
+**Why this target:** the extension exists so that a slow or failed request
+can be explained after the fact. A request with no record, or a total time
+the stages can't account for, is exactly what the instrumentation is
+supposed to rule out, so nothing short of all of them counts. The 95% bound
+says the breakdown has to explain the total, not just sit beside it. A gap
+of more than 5% means time is going somewhere I don't measure. (Appeals to
+an unknown content_id are excluded: unit 7's criterion 4 requires that they
+write nothing.)
+
+---
+
+## C2. A warm submission answers fast enough to feel instant
+
+Of the 20 warm submissions in each trial, **at least 19 have a logged
+`duration_ms` under 150 ms**.
+
+**Why this target:** a writer clicking submit expects the label to appear
+straight away, and the whole pipeline is a single local model pass. 150 ms
+is about twice what the smoke test saw on one short text. The 20 include
+longer pieces of up to about 130 words, which cost more model time, so the
+margin is not as large as it looks. 19 rather than 20 allows one outlier,
+such as a garbage-collection pause. Two slow requests out of twenty is a
+pattern, not an outlier.
+
+---
+
+## C3. The first submission after starting doesn't look broken
+
+In each trial, the cold submission (the first valid one, logged with
+`model_was_loaded: false`) has a logged **`duration_ms` under 5,000 ms**,
+in **3 of 3 trials**.
+
+**Why this target:** the first person after a restart waits for gpt2 to load.
+Past about five seconds with no answer, people assume a web request has
+failed and resubmit, which on this service burns one of their 5 per minute.
+The smoke test saw 2.8 s once and 8.5 s once, so I don't know which side of
+5 s this lands on, and that's the point of testing it.
+
+---
+
+## C4. One warm run costs at most 0.2 seconds of CPU
+
+The **mean `cpu_ms` of the 20 warm submissions is at most 200 ms** in each
+trial, and the cold submission's `cpu_ms` is reported separately so it
+can't hide in the average.
+
+**Why this target:** there's no API bill, so CPU time is the real cost. It
+decides how many submissions one machine can take before people queue.
+200 ms of CPU per run means one core handles at least 5 a second. That's far
+more than the rate limit lets any one writer send, so a classroom-sized
+burst wouldn't queue. Above that, the cost is what limits the service, not
+the rate limiter.
+
+---
+
+## C5. Bad input is turned away before the model is touched
+
+In each trial, all **14 of 14** bad-input requests get a 4xx response with a
+JSON `error` field, and none gets a 500. Each one writes one `rejected`
+entry whose **`duration_ms` is under 20 ms**, the 60,000-character text
+included. Because the batch runs on a freshly started service, **`GET
+/health` must still say `detector_loaded: false` after all 14**: no bad
+request caused the model to load.
+
+**Why this target:** a bad request should cost almost nothing, because
+otherwise junk can be used to keep the service busy. If anything in the
+batch reached signal one it would take tens of milliseconds at least, and on
+a fresh service it would load gpt2. The 20 ms limit and the
+`detector_loaded` check would each catch that independently. This is the
+bad path the instrumentation now lets me see: previously I could only show
+that bad input was refused, not that it was refused cheaply.
