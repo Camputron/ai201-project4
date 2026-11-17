@@ -27,7 +27,7 @@ takes several seconds; later ones well under one).
 
 | Need | Detail |
 |---|---|
-| Python | 3.11, 3.12 or 3.13 — **not 3.14**. Tested on 3.12.11 (macOS 26, Apple Silicon). `start.sh` picks the first suitable `python3.x` on your PATH. |
+| Python | 3.11, 3.12 or 3.13 — **not 3.14**. Developed on 3.12.11; the fresh-clone test of `start.sh` picked 3.13.4 and worked (macOS 26, Apple Silicon). `start.sh` picks the first suitable `python3.x` on your PATH, newest first. |
 | Dependencies | `requirements.txt`, every package pinned with lower and upper bounds (flask, flask-limiter, requests, transformers, torch, gunicorn, certifi) |
 | Model | `gpt2` from Hugging Face, about **550 MB**, cached in `~/.cache/huggingface/hub`. Downloaded once by `start.sh` (or `python detector.py`). Needs internet the first time only. |
 | Disk | About 9 GB free — torch is most of it |
@@ -43,6 +43,12 @@ pip install -r requirements.txt
 python detector.py
 python app.py
 ```
+
+**Tested from a fresh clone** (2026-11-16): `git clone` into an empty folder,
+`./start.sh`, then one `/submit` — it started and answered on the first try.
+One honest limit: gpt2 was already in this machine's Hugging Face cache, so
+the model-download step wasn't exercised from cold. A machine without the
+cache downloads it in that step.
 
 **Gotchas I hit**
 
