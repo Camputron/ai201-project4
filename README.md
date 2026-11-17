@@ -923,3 +923,151 @@ Out of scope, on purpose:
   in unit 8's What's Still Broken.
 - **New endpoints or a UI.** No `/stats` dashboard and no web page. The
   numbers are read from `logs/audit.jsonl` by a script.
+
+**Running It**
+
+**Path B, local with logs.** One command from a fresh clone, `./start.sh`.
+It builds `.venv` with Python 3.11–3.13, installs the pinned
+`requirements.txt`, downloads gpt2 (~550 MB) once, and starts the service on
+`http://127.0.0.1:5000`. Everything else — what the environment needs, the
+Windows steps, the macOS port-5000 problem, and the fresh-clone test — is in
+[RUNNING.md](RUNNING.md). Hosting was ruled out in The Shape: the model
+alone is larger than the free tier's 512 MB.
+
+The record of it running is `logs/audit.jsonl`, committed. The capstone
+trials added 114 entries to it (38 per trial) and the cost measurement ten
+more.
+
+**Instrumentation**
+
+Every request to `/submit` and `/appeal` writes one JSON line to
+`logs/audit.jsonl`. These fields were added this unit, by
+`app.py::_start_clock` / `_elapsed` / `_preview` and the stage timers in
+`app.py::submit`:
+
+| Field | On | What it holds |
+|---|---|---|
+| `duration_ms` | every entry | Wall time from the request arriving to just before its log line is written |
+| `cpu_ms` | every entry | CPU time the process spent in that window. It can exceed wall time because torch uses several threads |
+| `stages_ms` | decisions | `validate_ms`, `model_ms` (signal one), `style_ms` (signal two), `scoring_ms` (combine + label) |
+| `model_was_loaded` | decisions | `true` = warm (gpt2 already in memory), `false` = this request loaded it |
+| `input_preview`, `input_chars` | submissions | First 80 characters of the text, newlines flattened, and its length |
+| `endpoint`, `http_status` | every entry | Which route, and what it answered |
+
+These sit alongside the unit 8 fields: `timestamp`, `content_id`,
+`creator_id`, `guess`, both signal scores, `combined_score`, `label`,
+`status`, and `reason` on rejections.
+
+What's not logged, on purpose: an appeal to a content_id that doesn't exist.
+Unit 7's criterion 4 requires that it writes nothing.
+
+Ten entries from capstone trial 1 (`results/capstone_2026-11-16_2240_before.md`),
+labels shortened. The first six are **failed runs**, rejected inputs and
+one 429. The cold submission is the one that loaded the model.
+
+```json
+{"timestamp": "2026-11-17T03:39:56+00:00", "creator_id": "cap_d67ac3_b1", "event": "rejected", "status": "rejected", "reason": "missing_text", "http_status": 400, "endpoint": "/submit", "input_preview": null, "input_chars": null, "duration_ms": 0.6, "cpu_ms": 0.7}
+{"timestamp": "2026-11-17T03:39:56+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "invalid_json", "http_status": 400, "endpoint": "/submit", "input_preview": null, "input_chars": null, "duration_ms": 0.2, "cpu_ms": 0.2}
+{"timestamp": "2026-11-17T03:39:56+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "missing_creator_id", "http_status": 400, "endpoint": "/submit", "input_preview": "Some writing with nobody attached to it.", "input_chars": 40, "duration_ms": 0.4, "cpu_ms": 0.4}
+{"timestamp": "2026-11-17T03:39:56+00:00", "creator_id": "cap_d67ac3_b8", "event": "rejected", "status": "rejected", "reason": "text_too_long", "http_status": 413, "endpoint": "/submit", "text_length": 60000, "input_preview": "word word word word word word word word word word word word word word word word …", "input_chars": 60000, "duration_ms": 1.0, "cpu_ms": 1.0}
+{"timestamp": "2026-11-17T03:39:56+00:00", "creator_id": "cap_d67ac3_flood", "event": "rejected", "status": "rejected", "reason": "text_too_short", "http_status": 422, "endpoint": "/submit", "word_count": 8, "input_preview": "Testing the rate limit with a short body.", "input_chars": 41, "duration_ms": 0.3, "cpu_ms": 0.3}
+{"timestamp": "2026-11-17T03:39:56+00:00", "creator_id": "cap_d67ac3_flood", "event": "rejected", "status": "rejected", "reason": "rate_limited", "limit": "5 per 1 minute", "endpoint": "/submit", "http_status": 429, "input_preview": "Testing the rate limit with a short body.", "duration_ms": 0.2, "cpu_ms": 0.2}
+{"timestamp": "2026-11-17T03:39:59+00:00", "content_id": "8394b002bb18", "creator_id": "cap_d67ac3_cold", "guess": "human", "model_score": 0.336, "style_score": 0.4278, "combined_score": 0.3911, "label": "This reads like it was written by a pers…", "status": "decided", "word_count": 72, "endpoint": "/submit", "http_status": 200, "input_preview": "By nine o’clock of that evening snow lay deep in the streets and the weather had…", "input_chars": 377, "model_was_loaded": false, "duration_ms": 2620.6, "cpu_ms": 2512.1, "stages_ms": {"validate_ms": 0.2, "model_ms": 2620.0, "style_ms": 0.4, "scoring_ms": 0.0}}
+{"timestamp": "2026-11-17T03:39:59+00:00", "content_id": "e35aa80a6949", "creator_id": "cap_d67ac3_w00", "guess": "human", "model_score": 0.2835, "style_score": 0.2805, "combined_score": 0.2817, "label": "This reads like it was written by a pers…", "status": "decided", "word_count": 81, "endpoint": "/submit", "http_status": 200, "input_preview": "I have many tree friends in Wrentham. One of them, a splendid oak, is the specia…", "input_chars": 417, "model_was_loaded": true, "duration_ms": 65.2, "cpu_ms": 129.3, "stages_ms": {"validate_ms": 0.3, "model_ms": 64.6, "style_ms": 0.2, "scoring_ms": 0.0}}
+{"timestamp": "2026-11-17T03:39:59+00:00", "content_id": "a28abb0ea9b1", "creator_id": "cap_d67ac3_w08", "guess": "human", "model_score": 0.4559, "style_score": 0.2679, "combined_score": 0.3431, "label": "This reads like it was written by a pers…", "status": "decided", "word_count": 118, "endpoint": "/submit", "http_status": 200, "input_preview": "It was in 1862 that, in spite of the Southern Members of Congress, who wished a …", "input_chars": 639, "model_was_loaded": true, "duration_ms": 80.8, "cpu_ms": 173.3, "stages_ms": {"validate_ms": 0.3, "model_ms": 80.2, "style_ms": 0.3, "scoring_ms": 0.0}}
+{"timestamp": "2026-11-17T03:40:00+00:00", "content_id": "e35aa80a6949", "creator_id": "cap_d67ac3_w00", "event": "appeal", "status": "under_review", "reasoning": "I wrote this (capstone trial 1).", "endpoint": "/appeal", "http_status": 200, "duration_ms": 2.2, "cpu_ms": 2.3}
+```
+
+**What It Costs**
+
+This service calls no paid API, so a run's real cost is **compute**:
+the CPU time one submission uses and the wall time someone waits.
+
+**How I measured it.** I ran `python measure_cost.py --runs 10 --label before`
+against a freshly started service. It sends 10 submissions one at a time
+(the human and AI texts from `scenarios.py`), then reads the `duration_ms`
+and `cpu_ms` that `app.py::submit` logged for exactly those 10 requests
+back out of the audit log. Report: `results/cost_2026-11-16_2240_before.md`.
+
+| | Wall time | CPU time |
+|---|---|---|
+| Mean over all 10 | 0.320 s | 0.367 s |
+| Warm runs (9 of 10): mean | **0.066 s** | **0.133 s** |
+| Warm runs: 90th percentile | 0.076 s | 0.160 s |
+| Cold run (1 of 10, loads gpt2) | 2.608 s | 2.476 s |
+| Where the warm time goes | `model_ms` 65.6 of 66.2 ms (99%) | |
+
+The 10-run mean is pulled up by the one cold request. So the number that
+describes a normal run is the warm one: **0.133 s of CPU per submission**.
+
+**A hundred people a day**, each submitting one piece:
+
+- Warm: 100 × 0.133 s = **13.3 CPU-seconds a day**.
+- If the service restarts once a day, the first person pays the load:
+  13.3 + (2.476 − 0.133) = **15.6 CPU-seconds a day**.
+- Worst case, a restart before every request: 100 × 2.476 s = 248
+  CPU-seconds a day, still about 4 minutes.
+
+Per-request compute is negligible at this scale. The real cost of running
+it is holding **about 0.8 GB of memory all day** for the loaded model, which
+is what rules out the free host.
+
+**Run Log and Verdicts**
+
+`python capstone_eval.py --trials 3 --label before`. Each trial starts the
+service fresh and sends exactly the requests criteria.md defines: 14 bad
+inputs, 1 cold submission, 20 warm submissions and 3 appeals. Every number is
+read from the log entries the service wrote. Nothing was changed between
+trials. Report: `results/capstone_2026-11-16_2240_before.md`.
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| C1. Every request leaves one timed record | 38/38 timed; 21/21 decisions' stages ≥ 95% of total | 38/38; 21/21 (min 99.83%) | 38/38; 21/21 (min 99.81%) | 38/38; 21/21 (min 99.81%) | **MET** |
+| C2. Warm submissions fast | ≥ 19/20 under 150 ms | 20/20 (max 80.8) | 20/20 (max 76.0) | 20/20 (max 98.3) | **MET** |
+| C3. First submission after start | < 5,000 ms, 3 of 3 | 2,620.6 ms | 2,586.4 ms | 2,534.0 ms | **MET** |
+| C4. Warm CPU cost | mean ≤ 200 ms | 123.3 ms | 121.3 ms | 122.2 ms | **MET** |
+| C5. Bad input refused before the model | 14/14 4xx JSON error, each < 20 ms, model still unloaded | 14/14; 14/14 (max 1.0 ms); not loaded | 14/14; 14/14 (max 0.7 ms); not loaded | 14/14; 14/14 (max 1.0 ms); not loaded | **MET** |
+
+The trials vary (warm max 76–98 ms, cold 2.53–2.62 s), which shows they really
+are separate runs. The verdicts don't change across them.
+
+**Real output from one trial** (trial 1, produced by
+`capstone_eval.py::evaluate`, reading entries written by `app.py::submit`):
+
+```json
+{"C1": {"expected_entries": 38, "new_entries": 38, "timed_entries": 38, "decisions": 21, "decisions_with_all_stages": 21, "min_stage_share": 0.9983, "decisions_stage_share_ge_95pct": 21, "met": true},
+ "C2": {"warm_entries": 20, "under_150ms": 20, "median_ms": 60.5, "max_ms": 80.8, "met": true},
+ "C3": {"cold_entries": 1, "cold_duration_ms": 2620.6, "cold_stages_ms": {"validate_ms": 0.2, "model_ms": 2620.0, "style_ms": 0.4, "scoring_ms": 0.0}, "met": true},
+ "C4": {"warm_mean_cpu_ms": 123.3, "warm_mean_wall_ms": 63.0, "cold_cpu_ms": 2512.1, "met": true},
+ "C5": {"bad_sent": 14, "bad_4xx_with_json_error": 14, "bad_5xx": 0, "statuses": [400, 400, 400, 400, 400, 400, 400, 413, 422, 422, 422, 422, 422, 429], "rejected_entries": 14, "rejected_under_20ms": 14, "slowest_rejection_ms": 1.0, "detector_loaded_after_bad_batch": false, "met": true}}
+```
+
+The log lines behind each number are under Instrumentation above.
+
+**How I decided each verdict.** Each target is a count or a bound checked
+directly against the logged numbers in every trial. None needed
+interpreting.
+
+**All five met — were the targets set low?** Mostly, yes:
+
+- **C5 was far too loose.** I allowed 20 ms and the slowest rejection took
+  1.0 ms. The `detector_loaded` check is what actually tested something.
+- **C2 and C4 had about 1.5× headroom.** The warm maximum was 98 ms against
+  150, and mean CPU was 123 ms against 200. I'd tighten **C2 to "19 of 20
+  under 100 ms"**: trial 3's 98.3 ms means that version could really be
+  missed.
+- **C3 is the one that's weaker than it looks.** All three trials restarted
+  the *process*, but the operating system still had torch and gpt2's files
+  in its disk cache from the trial before. The smoke test before the
+  criteria saw an **8.5 s** first submission when those files came from
+  disk, and that would have missed C3. So "under 5 s" was only met under
+  warm-disk conditions the criterion never named.
+
+**Diagnosis — the pattern behind the numbers, even with no misses.** One
+stage is the whole cost. In every decision, `model_ms` is 99% or more of the
+total. Validation, signal two and scoring together never exceed 1 ms. So
+the only latency that matters to a person is **signal one, and its worst
+case is the first request after a start**, when `detector._load` imports
+torch and transformers and reads gpt2 from disk. The model is loaded
+*lazily*, on the first `/submit`, so that cost is charged to a writer
+instead of to startup. That's what the improvement targets.
