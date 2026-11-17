@@ -144,6 +144,10 @@ if config.RATE_LIMITING_ENABLED:
             creator_id=payload.get("creator_id", "unknown"),
             reason="rate_limited",
             limit=str(exc.description),
+            endpoint=request.path,
+            http_status=429,
+            input_preview=_preview(payload.get("text")),
+            **_elapsed(),
         )
         return jsonify({
             "error": "rate_limited",
@@ -334,6 +338,9 @@ def appeal():
         content_id=content_id,
         creator_id=decision["creator_id"],
         reasoning=reasoning.strip(),
+        endpoint="/appeal",
+        http_status=200,
+        **_elapsed(),
     )
 
     return jsonify({
@@ -389,7 +396,12 @@ def _decision_for(content_id: str) -> dict | None:
 
 def _reject(creator_id: str, status_code: int, reason: str, message: str, **extra):
     """Refuse a submission: log it as rejected, answer with a JSON error."""
-    audit.log_rejection(creator_id=creator_id, reason=reason, http_status=status_code, **extra)
+    payload = request.get_json(silent=True)
+    text = payload.get("text") if isinstance(payload, dict) else None
+    extra.setdefault("input_preview", _preview(text))
+    extra.setdefault("input_chars", len(text) if isinstance(text, str) else None)
+    audit.log_rejection(creator_id=creator_id, reason=reason, http_status=status_code,
+                        endpoint=request.path, **extra, **_elapsed())
     return jsonify({"error": reason, "message": message}), status_code
 
 
