@@ -143,6 +143,8 @@ RATE_LIMIT_STORAGE = "memory://"
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
-LOG_DIR = ROOT / "logs"
+# AI201_LOG_DIR points the audit log somewhere else — used to smoke-test the
+# capstone scripts without writing into the committed log.
+LOG_DIR = Path(os.getenv("AI201_LOG_DIR", ROOT / "logs"))
 AUDIT_LOG = LOG_DIR / "audit.jsonl"
 RESULTS_DIR = ROOT / "results"
