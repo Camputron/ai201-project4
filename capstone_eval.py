@@ -29,6 +29,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import socket
 import statistics
 import subprocess
@@ -153,7 +154,11 @@ def evaluate(n, sent, new, loaded_after_bad, cold_body):
     decisions = [e for e in new if e.get("status") == "decided"]
     rejected = [e for e in new if e.get("status") == "rejected"]
     cold = [e for e in decisions if e.get("model_was_loaded") is False]
-    warm = [e for e in decisions if e.get("model_was_loaded") is True]
+    # The 20 step-4 submissions, picked by creator_id (cap_<tag>_wNN). This
+    # used to be `model_was_loaded is True`, which picked the same 20 until the
+    # improvement loaded the model at startup — then the step-3 submission
+    # counted as warm too and C2 saw 21.
+    warm = [e for e in decisions if re.search(r"_w\d\d$", str(e.get("creator_id")))]
 
     timed = [e for e in new if isinstance(e.get("duration_ms"), (int, float))
              and isinstance(e.get("cpu_ms"), (int, float))]
