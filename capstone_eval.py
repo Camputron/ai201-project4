@@ -216,14 +216,17 @@ def write_report(trials, args):
 
     def cell(t, c):
         d = t[c]
-        return {
-            "C1": f"{d['new_entries']}/38 logged; {d['decisions_stage_share_ge_95pct']}/21 stages ≥95%",
-            "C2": f"{d['under_150ms']}/20 under 150 ms",
-            "C3": f"{d['cold_duration_ms']} ms",
-            "C4": f"{d['warm_mean_cpu_ms']} ms CPU",
-            "C5": f"{d['bad_4xx_with_json_error']}/14 4xx; {d['rejected_under_20ms']}/14 <20 ms; "
-                  f"loaded={d['detector_loaded_after_bad_batch']}",
-        }[c] + (" ✓" if d["met"] else " ✗")
+        text = {
+            "C1": lambda: f"{d['new_entries']}/38 logged; "
+                          f"{d['decisions_stage_share_ge_95pct']}/21 stages ≥95%",
+            "C2": lambda: f"{d['under_150ms']}/20 under 150 ms",
+            "C3": lambda: f"{d['cold_duration_ms']} ms",
+            "C4": lambda: f"{d['warm_mean_cpu_ms']} ms CPU",
+            "C5": lambda: f"{d['bad_4xx_with_json_error']}/14 4xx; "
+                          f"{d['rejected_under_20ms']}/14 <20 ms; "
+                          f"loaded={d['detector_loaded_after_bad_batch']}",
+        }[c]()
+        return text + (" ✓" if d["met"] else " ✗")
 
     targets = {"C1": "38/38 timed, 21/21 stages ≥95%", "C2": "≥19/20 under 150 ms",
                "C3": "< 5,000 ms", "C4": "mean ≤ 200 ms CPU",
