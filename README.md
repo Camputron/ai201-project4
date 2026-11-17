@@ -1008,6 +1008,14 @@ describes a normal run is the warm one: **0.133 s of CPU per submission**.
 - Worst case, a restart before every request: 100 × 2.476 s = 248
   CPU-seconds a day, still about 4 minutes.
 
+**After the improvement** (`results/cost_2026-11-16_2243_after.md`, same
+method): every one of the 10 runs is warm. The mean over all 10 is
+**0.071 s wall, 0.143 s CPU**, and the slowest is 0.120 s. The model load
+(about 2.6 s) is now paid once at startup instead of inside a request, so a
+day with one restart costs 100 × 0.143 = 14.3 CPU-seconds of requests plus
+one 2.6 s load, about **17 CPU-seconds a day**, the same total as before,
+but nobody waits for it.
+
 Per-request compute is negligible at this scale. The real cost of running
 it is holding **about 0.8 GB of memory all day** for the loaded model, which
 is what rules out the free host.
@@ -1071,3 +1079,128 @@ case is the first request after a start**, when `detector._load` imports
 torch and transformers and reads gpt2 from disk. The model is loaded
 *lazily*, on the first `/submit`, so that cost is charged to a writer
 instead of to startup. That's what the improvement targets.
+
+**The Improvement**
+
+**What I changed:** one thing in `app.py::main`. gpt2 is loaded **before the
+service starts answering**, with `detector.warm_up()`, instead of lazily on
+the first `/submit`. If the model can't load, the service still starts and
+`/submit` answers 503 exactly as before. Nothing else in the system moved.
+
+**Why:** the diagnosis above. `model_ms` is 99% or more of every decision,
+and the one large cost a person ever pays is the first request after a
+start: 2.5–4.1 s of loading gpt2 inside their request. Run 1 of the
+re-baseline took 4.1 s, close enough to C3's 5 s that a cold disk would
+cross it. Loading at startup moves that cost to a moment nobody is waiting.
+
+**Two measurement fixes before the after-run, both committed separately:**
+
+1. I added **startup time** (launching `app.py` until `/health` first
+   answers) to `capstone_eval.py`. The change moves cost into startup, so
+   without this number the trade would be invisible. I re-ran the unchanged
+   system with it as the baseline: `results/capstone_2026-11-16_2242_before_startup.md`.
+2. The first after-run (`results/capstone_2026-11-16_2242_after.md`, kept)
+   showed C2 as "21/20". My runner had picked "warm" submissions by
+   `model_was_loaded: true`, and after the change the step-3 submission is
+   warm too. It now picks the 20 step-4 submissions by `creator_id`. On all
+   six before-trials the new rule selects exactly the same 20 entries, so the
+   before results don't change. The after table below is the corrected re-run.
+
+**Before and after, side by side.** "As written" is each criterion's
+original wording. C3 and C5 also show the revision in criteria.md, which
+was written after this run, under the originals, with reasons.
+
+| Criterion | Target | Before (runs 1 / 2 / 3) | After (runs 1 / 2 / 3) | Verdict before → after |
+|---|---|---|---|---|
+| C1. One timed record per request | 38/38; stages ≥ 95% | 38/38, min 99.83% / 99.82% / 99.82% | 38/38, min 99.82% / 99.83% / 99.82% | MET → **MET** |
+| C2. Warm < 150 ms | ≥ 19/20 | 20/20 (max 86.6 / 79.9 / 82.4 ms) | 20/20 (max 94.9 / 79.4 / 79.0 ms) | MET → **MET** |
+| C3 as written: cold entry < 5,000 ms | 3 of 3 | 4,100.8 / 2,553.1 / 2,576.6 ms | no `model_was_loaded: false` entry exists | MET → **MISSED (unmeasurable)** |
+| C3 revised: first submission < 5,000 ms | 3 of 3 | 4,100.8 / 2,553.1 / 2,576.6 ms | **121.9 / 116.8 / 118.1 ms** | MET → **MET** |
+| C4. Warm mean CPU ≤ 200 ms | each trial | 125.1 / 122.4 / 122.5 ms | 123.5 / 122.7 / 122.7 ms | MET → **MET** |
+| C5 as written: … and `detector_loaded` false | 14/14 | 14/14, max 0.7 / 0.7 / 0.8 ms, not loaded | 14/14, max 0.8 / 0.8 / 0.7 ms, **loaded = true** | MET → **MISSED** |
+| C5 revised: … and no rejection has `stages_ms` | 14/14 | 0 of 14 with stages, all trials | 0 of 14 with stages, all trials | MET → **MET** |
+| *Startup (not a criterion)* | — | 221 / 216 / 218 ms | **2,634 / 2,737 / 2,621 ms** | — |
+
+**Did it help?** Yes for the person it was aimed at: the first writer after
+a restart now waits **about 0.12 s instead of 2.5–4.1 s**, roughly 20–35×
+faster, and their request is now in the same range as every other one.
+Warm latency, CPU cost and bad-input handling didn't move (C1, C2, C4 and
+C5's timing all within a few ms of before).
+
+**What it cost:** startup went from **0.22 s to 2.6–2.7 s**. For that time the
+service doesn't answer at all, not even `/health`. That's the trade. A writer
+never waits, but anything checking "is it up?" right after a restart sees
+nothing for about 2.5 s instead of an answer. And the two criteria whose
+measurements depended on lazy loading stopped being measurable as written.
+That's a real finding about how I wrote them: C3 and C5 measured an
+implementation detail (the `model_was_loaded` flag and the global
+`detector_loaded` state) rather than the thing a person would see.
+
+The first submission is still about 2× a median warm one (117–122 ms vs
+about 60 ms), probably first-inference setup inside torch. It's well inside
+every target, so I left it.
+
+**What's Still Broken**
+
+No criterion is missed in its revised form, so this section is about what
+my targets didn't test and which I'd tighten.
+
+- **C3 was only ever measured with a warm disk cache.** Every trial restarted
+  the process, but torch and gpt2's files stayed in the OS file cache. The
+  one truly cold load I saw (8.5 s, the smoke test before the criteria) would
+  have missed the original C3. After the improvement that cost is in startup,
+  where no criterion looks at it. *What I'd do:* add a startup criterion
+  ("`/health` answers within N s of launch") and test it after a reboot.
+  *Why I stopped:* a real cold-disk test needs a reboot per trial, three
+  times over, which I didn't do this unit.
+- **Targets I'd tighten:** C2 from 150 ms to **"19 of 20 under 100 ms"**.
+  The worst warm request in all twelve trials was 98.3 ms, so that could
+  really be missed. And C5's 20 ms from to **2 ms**: the slowest rejection in
+  every trial was 1.0 ms or less.
+- **C4 isn't a real-world cost number.** Requests in every trial were sent
+  one at a time, and `cpu_ms` is process-wide, so it's only exact without
+  concurrency. Two writers at once would each show both requests' CPU.
+  *What I'd do:* a load observation at 10× the rate (the brief's stretch).
+  *Why I stopped:* that's a second piece of work, and this unit was scoped
+  to one.
+- **Failed appeals still leave no record.** That's on purpose, to keep unit
+  7's criterion 4, but it means a mistyped appeal is invisible in the log.
+
+**The one thing I'd do first with another unit:** test startup from a truly
+cold machine and set a criterion on it. The improvement moved the system's
+one real cost into startup, and right now nothing measures it under the
+conditions where it's worst.
+
+**How I Used AI**
+
+I worked with Claude Code (Claude Opus 5.5) in the repo for the whole
+capstone. It read the brief, proposed shapes, built the instrumentation and
+scripts, ran every trial and drafted this write-up.
+
+**Moment 1 — the criteria**
+
+- *What I asked for:* after Claude listed candidate extensions and
+  recommended Shape A, I asked it to write the five criteria itself.
+- *What came back:* it pointed out the brief asks students to write their
+  own, then drafted them as asked, with a disclosure at the top of the
+  capstone section of criteria.md. The disclosure lists the timing numbers it
+  had already seen while smoke-testing the build (65–70 ms warm, 2.8 s and
+  8.5 s cold), so a reader can judge whether the targets were fitted to
+  them.
+- *What changed:* I kept that disclosure in, and the criteria were committed
+  (`427fc6d`) before any capstone results. In hindsight most targets were
+  loose: every one was met before the improvement. That's written up
+  honestly above rather than adjusted.
+
+**Moment 2 — a result that looked like a regression**
+
+- *What I asked for:* make the one improvement and re-run.
+- *What came back:* the first after-run showed C2 as "21/20 ✗". Claude traced
+  it to its own test runner, not the service: "warm" had been defined by
+  `model_was_loaded`, which the improvement changed. It also flagged that C3
+  and C5 had become unmeasurable as written, for the same reason.
+- *What changed:* the runner was fixed and checked against all six
+  before-trials (identical selections). The flawed run was kept in
+  `results/`. C3 and C5 got revisions written underneath the originals, and
+  the as-written verdicts stay in the table as MISSED, so nothing is quietly
+  turned into a pass.
