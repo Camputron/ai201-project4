@@ -52,16 +52,19 @@ def start_service(port):
         sys.exit(f"Something is already listening on port {port}. Stop it first — "
                  f"a stale server would answer with old code.")
     env = {**os.environ, "PORT": str(port), "AI201_DEBUG": "0"}
+    started = time.perf_counter()
     proc = subprocess.Popen([PYTHON, "app.py"], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     import requests
-    for _ in range(120):
+    for _ in range(600):
         try:
             if requests.get(f"http://127.0.0.1:{port}/health", timeout=2).ok:
+                # Time from launching app.py to /health first answering.
+                proc.startup_ms = round((time.perf_counter() - started) * 1000, 1)
                 return proc
         except Exception:  # noqa: BLE001
             pass
-        time.sleep(0.5)
+        time.sleep(0.1)
     proc.kill()
     sys.exit("The service didn't come up within a minute.")
 
@@ -129,7 +132,9 @@ def run_trial(n, args):
         proc.wait(timeout=20)
 
     new = _read_log()[log_before:]
-    return evaluate(n, sent, new, loaded_after_bad, cold)
+    result = evaluate(n, sent, new, loaded_after_bad, cold)
+    result["startup_ms"] = proc.startup_ms
+    return result
 
 
 def _read_log():
@@ -178,10 +183,17 @@ def evaluate(n, sent, new, loaded_after_bad, cold_body):
           "slowest_3": sorted(warm_ms)[-3:]}
     c2["met"] = len(warm) == 20 and c2["under_150ms"] >= 19
 
+    # C3 as written: the cold entry (model_was_loaded false). Also recorded:
+    # the first valid submission regardless, which is what C3 is for — see
+    # the revision under C3 in criteria.md.
+    first = decisions[0] if decisions else None
     c3 = {"cold_entries": len(cold),
           "cold_duration_ms": cold[0]["duration_ms"] if cold else None,
-          "cold_stages_ms": cold[0].get("stages_ms") if cold else None}
+          "cold_stages_ms": cold[0].get("stages_ms") if cold else None,
+          "first_submission_ms": first["duration_ms"] if first else None,
+          "first_submission_model_was_loaded": first.get("model_was_loaded") if first else None}
     c3["met"] = len(cold) == 1 and cold[0]["duration_ms"] < 5000
+    c3["first_submission_under_5s"] = bool(first) and first["duration_ms"] < 5000
 
     warm_cpu = [e["cpu_ms"] for e in warm]
     c4 = {"warm_mean_cpu_ms": round(statistics.mean(warm_cpu), 1) if warm_cpu else None,
@@ -220,7 +232,7 @@ def write_report(trials, args):
             "C1": lambda: f"{d['new_entries']}/38 logged; "
                           f"{d['decisions_stage_share_ge_95pct']}/21 stages ≥95%",
             "C2": lambda: f"{d['under_150ms']}/20 under 150 ms",
-            "C3": lambda: f"{d['cold_duration_ms']} ms",
+            "C3": lambda: f"cold {d['cold_duration_ms']} ms; first {d['first_submission_ms']} ms",
             "C4": lambda: f"{d['warm_mean_cpu_ms']} ms CPU",
             "C5": lambda: f"{d['bad_4xx_with_json_error']}/14 4xx; "
                           f"{d['rejected_under_20ms']}/14 <20 ms; "
@@ -242,6 +254,8 @@ def write_report(trials, args):
     for c in ("C1", "C2", "C3", "C4", "C5"):
         allmet = "yes" if all(t[c]["met"] for t in trials) else "**no**"
         lines.append(f"| {c} | {targets[c]} | {' | '.join(cell(t, c) for t in trials)} | {allmet} |")
+    lines += ["", "Startup (launch app.py → /health answers): "
+              + ", ".join(f"run {t['trial']} {t['startup_ms']} ms" for t in trials)]
     for t in trials:
         lines += ["", f"## Trial {t['trial']}", "", "```json",
                   json.dumps({c: t[c] for c in ('C1', 'C2', 'C3', 'C4', 'C5')}, indent=2),
