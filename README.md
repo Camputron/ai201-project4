@@ -881,3 +881,45 @@ it with their reputations, and they're the ones least able to argue back.
 ---
 
 📖 **How to run this project: [RUNNING.md](RUNNING.md)**
+
+---
+
+## Capstone
+
+<!-- Unit 9. Everything above this heading is units 7 and 8 and is left as
+     submitted. Every section below is this unit's. -->
+
+**What This Extends**
+
+Provenance Guard, the system from units 7 and 8: a local web service that
+takes a piece of writing, scores it with two signals (gpt2 perplexity and
+sentence-shape statistics), combines them into a 0–1 score, gives a
+plain-English label, logs the decision and accepts appeals.
+
+What's new is the operational layer around it. Every request now records
+how long it took, both in total and broken down by stage (validation, signal
+one, signal two, scoring and labelling, writing the log). It also records
+whether the model was already loaded (a warm request) or had to load first
+(a cold one), how much CPU time it used, and a short preview of what came in.
+A measurement script turns those log records into a per-request cost in
+seconds of compute. RUNNING.md is rewritten so that someone who isn't me can
+start the service from a fresh clone with one command.
+
+**The Shape**
+
+**A — Deploy and instrument**, on **Path B (local with logs)**. The
+extension is the run path, the timing instrumentation, and the numbers that
+come out of it. The system's behaviour (scores, labels, appeals, rate
+limits) doesn't change in the build. Any change to it comes only as the one
+measured improvement in Milestone 6.
+
+Out of scope, on purpose:
+
+- **Hosting it.** gpt2 needs well over the free tier's 512 MB of memory, so
+  Path A isn't realistic. I'm not putting it in a container either.
+- **Changing what the detector decides.** No changes to signals, weights,
+  thresholds or labels in the build, and no attempt to fix the unit 8
+  evasion attacks or the non-English (MF07) refusal. Those are documented
+  in unit 8's What's Still Broken.
+- **New endpoints or a UI.** No `/stats` dashboard and no web page. The
+  numbers are read from `logs/audit.jsonl` by a script.
