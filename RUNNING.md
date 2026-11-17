@@ -19,9 +19,11 @@ service. Leave that terminal open, and check it from a second one:
 curl http://127.0.0.1:5000/health
 ```
 
-`{"ok": true, ...}` means it's up. `detector_loaded` stays `false` until the
-first submission, because the model loads on first use (that first request
-takes several seconds; later ones well under one).
+`{"ok": true, ...}` means it's up. The service loads gpt2 *before* it starts
+answering, so `/health` takes about 3 seconds to respond after a start, and
+`detector_loaded` is already `true` when it does. After that, a submission
+takes around a tenth of a second. (Before the capstone improvement the model
+loaded on the first submission instead, which made that one request slow.)
 
 **What the environment needs**
 

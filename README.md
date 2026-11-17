@@ -934,9 +934,8 @@ Windows steps, the macOS port-5000 problem, and the fresh-clone test — is in
 [RUNNING.md](RUNNING.md). Hosting was ruled out in The Shape: the model
 alone is larger than the free tier's 512 MB.
 
-The record of it running is `logs/audit.jsonl`, committed. The capstone
-trials added 114 entries to it (38 per trial) and the cost measurement ten
-more.
+The record of it running is `logs/audit.jsonl`, committed. Each capstone
+trial adds 38 entries to it, and each cost measurement adds ten.
 
 **Instrumentation**
 
@@ -1154,8 +1153,8 @@ my targets didn't test and which I'd tighten.
   *Why I stopped:* a real cold-disk test needs a reboot per trial, three
   times over, which I didn't do this unit.
 - **Targets I'd tighten:** C2 from 150 ms to **"19 of 20 under 100 ms"**.
-  The worst warm request in all twelve trials was 98.3 ms, so that could
-  really be missed. And C5's 20 ms from to **2 ms**: the slowest rejection in
+  The worst warm request in the nine correctly scored trials was 98.3 ms,
+  so that could really be missed. And C5's 20 ms to **2 ms**: the slowest rejection in
   every trial was 1.0 ms or less.
 - **C4 isn't a real-world cost number.** Requests in every trial were sent
   one at a time, and `cpu_ms` is process-wide, so it's only exact without
