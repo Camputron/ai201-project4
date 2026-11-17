@@ -247,6 +247,19 @@ failed and resubmit, which on this service burns one of their 5 per minute.
 The smoke test saw 2.8 s once and 8.5 s once, so I don't know which side of
 5 s this lands on, and that's the point of testing it.
 
+> **Revised after the improvement:** In each trial, **the first valid
+> submission after `/health` first answers** has a logged `duration_ms`
+> under 5,000 ms, in 3 of 3 trials, whatever its `model_was_loaded` value.
+>
+> **Why revised:** the improvement loads gpt2 at startup, so no submission
+> is logged with `model_was_loaded: false` any more. The original measured
+> "the first submission" through that flag, so after the change it points
+> at an entry that doesn't exist. It can't be scored at all, not merely
+> missed. What the criterion is for, the first person after a start not
+> waiting so long they think it broke, is unchanged, and so is the 5,000 ms
+> target. The revised wording gives the same number as the original on
+> every before-run, because there the first submission *was* the cold one.
+
 ---
 
 ## C4. One warm run costs at most 0.2 seconds of CPU
@@ -280,3 +293,17 @@ a fresh service it would load gpt2. The 20 ms limit and the
 `detector_loaded` check would each catch that independently. This is the
 bad path the instrumentation now lets me see: previously I could only show
 that bad input was refused, not that it was refused cheaply.
+
+> **Revised after the improvement:** the `detector_loaded: false` clause is
+> replaced by: **none of the 14 `rejected` entries carries `stages_ms`**.
+> The route only starts the stage timers, and signal one, after a request
+> passes validation, so a rejection with no stages never reached the model.
+> The rest of C5 (14/14 4xx with a JSON error, no 500, each under 20 ms) is
+> unchanged.
+>
+> **Why revised:** with the model loaded at startup, `detector_loaded` is
+> `true` before the first request arrives, so it can no longer tell whether
+> a bad request reached the model. The clause stopped measuring anything.
+> Its replacement asks the same question of each request's own log entry
+> instead of the service's global state. On every before-run it gives the
+> same answer the original did: 0 of 14 had stages in all three trials.
