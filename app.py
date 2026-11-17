@@ -433,6 +433,23 @@ def main():
     print('    -H "Content-Type: application/json" \\')
     print("    -d '{\"message\": \"hello\"}'")
     print()
+
+    # CAPSTONE IMPROVEMENT (the one change): load gpt2 before serving, so the
+    # first writer after a start doesn't pay the 2.5–4 s load inside their
+    # request. The cost moves to startup, and /health doesn't answer until
+    # the model is ready. In debug mode the reloader runs this file twice; only
+    # the child that actually serves (WERKZEUG_RUN_MAIN) loads the model.
+    # If the model can't load, the service still starts and /submit answers
+    # 503 per request, exactly as before.
+    import os
+    if not config.DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        started = time.perf_counter()
+        try:
+            detector.warm_up()
+            print(f"  model loaded in {time.perf_counter() - started:.1f} s")
+        except detector.DetectorUnavailable as exc:
+            print(f"  model NOT loaded — /submit will answer 503: {exc}")
+
     # debug=True hands out an interactive debugger, so it's local-only — see config.py
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG)
 
