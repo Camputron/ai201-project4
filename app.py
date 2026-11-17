@@ -25,9 +25,10 @@ Routes:
     GET  /health      is the service up, and is the model loaded
 """
 
+import time
 import uuid
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 
 import audit
 import config
@@ -36,6 +37,38 @@ import scoring
 import stylometry
 
 app = Flask(__name__)
+
+
+# ── Instrumentation (capstone) ────────────────────────────────────────────────
+# Every request starts a wall clock and a CPU clock. Each log entry it writes
+# carries `duration_ms` (wall time from arrival to just before the entry is
+# written) and `cpu_ms` (CPU seconds this process spent in that window). CPU
+# time is process-wide, so it's only exact when requests arrive one at a time,
+# which is how the cost measurement sends them.
+
+PREVIEW_CHARS = 80
+
+
+@app.before_request
+def _start_clock():
+    g.t0 = time.perf_counter()
+    g.cpu0 = time.process_time()
+
+
+def _elapsed() -> dict:
+    """Wall and CPU milliseconds since this request arrived."""
+    return {
+        "duration_ms": round((time.perf_counter() - g.t0) * 1000, 1),
+        "cpu_ms": round((time.process_time() - g.cpu0) * 1000, 1),
+    }
+
+
+def _preview(text) -> str | None:
+    """The first PREVIEW_CHARS characters of the input, newlines flattened."""
+    if not isinstance(text, str):
+        return None
+    flat = " ".join(text.split())
+    return flat[:PREVIEW_CHARS] + ("…" if len(flat) > PREVIEW_CHARS else "")
 
 
 # ── Rate limiting — UNIT 8 ────────────────────────────────────────────────────
@@ -203,13 +236,30 @@ def submit():
                        f"useful; this was {word_count}. Nothing has been decided "
                        f"about this piece.", word_count=word_count)
 
+    # Each stage is timed on its own so a slow request can be traced to the
+    # stage that was slow. `model_was_loaded` says whether gpt2 was already
+    # in memory (a warm request) or loaded during this one (a cold request).
+    stages = {}
+    stages["validate_ms"] = round((time.perf_counter() - g.t0) * 1000, 1)
+    model_was_loaded = detector._model is not None
+
+    t = time.perf_counter()
     try:
         model_score = detector.model_signal(text)
     except (detector.DetectorUnavailable, ValueError) as exc:
-        return _reject(creator_id, 503, "detector_unavailable", str(exc))
+        return _reject(creator_id, 503, "detector_unavailable", str(exc),
+                       input_preview=_preview(text), input_chars=len(text),
+                       model_was_loaded=model_was_loaded)
+    stages["model_ms"] = round((time.perf_counter() - t) * 1000, 1)
+
+    t = time.perf_counter()
     style_score = stylometry.style_signal(text)
+    stages["style_ms"] = round((time.perf_counter() - t) * 1000, 1)
+
+    t = time.perf_counter()
     confidence = scoring.combine_signals(model_score, style_score)
     guess, label = scoring.score_to_label(confidence)
+    stages["scoring_ms"] = round((time.perf_counter() - t) * 1000, 1)
 
     content_id = uuid.uuid4().hex[:12]
     audit.log_decision(
@@ -222,6 +272,13 @@ def submit():
         label=label,
         status="decided",
         word_count=word_count,
+        endpoint="/submit",
+        http_status=200,
+        input_preview=_preview(text),
+        input_chars=len(text),
+        model_was_loaded=model_was_loaded,
+        **_elapsed(),
+        stages_ms=stages,
     )
 
     return jsonify({
